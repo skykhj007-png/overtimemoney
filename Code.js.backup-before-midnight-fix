@@ -1,0 +1,1142 @@
+// ==========================================
+// 💰 구글캘린더 잔업비 + 급여 자동 계산기 v7.0
+// ⭐ 최종 완성판 (2025.11.13)
+// ⭐ 새로운 소득세 계산 로직 적용
+// ==========================================
+
+// ==========================================
+// 🎯 개인 설정 (여기만 수정하세요!)
+// ==========================================
+
+function getMySettings() {
+  return {
+    CALENDAR_NAME: "skykhj007@gmail.com",
+    
+    // 💰 급여 정보
+    BASE_SALARY: 2643850,              // 기본급
+    WORKING_HOURS: 209,                // 월 소정근로시간
+    FIXED_OVERTIME_ALLOWANCE: 412140,  // 고정연장수당
+    PRODUCTION_BONUS: 528770,          // 생산장려금
+    
+    // ⏰ 잔업비 지급 설정
+    OVERTIME_PAY_DELAY_MONTHS: 2,      // 2개월 후 지급
+    
+    // 💸 비과세 항목
+    NON_TAXABLE_MEAL: 0,
+    NON_TAXABLE_VEHICLE: 0,
+    NON_TAXABLE_OTHER: 0,
+    
+    // 🎁 상여금
+    BONUS_MONTHS: [],
+    BONUS_AMOUNT: 0,
+    
+    // 👨‍👩‍👧‍👦 소득세 설정
+    DEPENDENTS: 1,                     // 부양가족 수 (본인 1명)
+    TAX_ENABLED: true,                 // 소득세 계산 여부 (반드시 true!)
+    
+    // 🏥 4대 보험료율
+    NATIONAL_PENSION_RATE: 4.505,
+    HEALTH_INSURANCE_RATE: 3.545,
+    LONG_TERM_CARE_RATE: 12.95,
+    EMPLOYMENT_INSURANCE_RATE: 0.9,
+    
+    // ⚙️ 기타
+    OVERTIME_MULTIPLIER: 1.5,
+    NIGHT_WORK_BONUS: 0,
+    LOCAL_TAX_RATE: 10
+  };
+}
+
+function getUserSettings() {
+  var mySettings = getMySettings();
+  mySettings.HOURLY_WAGE = mySettings.BASE_SALARY / mySettings.WORKING_HOURS;
+  mySettings.TOTAL_NON_TAXABLE = mySettings.NON_TAXABLE_MEAL + mySettings.NON_TAXABLE_VEHICLE + mySettings.NON_TAXABLE_OTHER;
+  return mySettings;
+}
+
+// ==========================================
+// 💰 메인_01: 오늘 잔업비 계산 (트리거용)
+// ==========================================
+
+function 메인_01_오늘잔업비계산() {
+  var settings = getUserSettings();
+  var today = new Date();
+  var startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0);
+  var endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59);
+  
+  var calendar = CalendarApp.getCalendarsByName(settings.CALENDAR_NAME)[0];
+  if (!calendar) {
+    Logger.log("❌ 캘린더 없음: " + settings.CALENDAR_NAME);
+    return;
+  }
+  
+  var events = calendar.getEvents(startOfDay, endOfDay);
+  
+  for (var i = 0; i < events.length; i++) {
+    if (events[i].getTitle() === "💰 오늘 잔업비") {
+      Logger.log("✅ 이미 계산 완료");
+      return;
+    }
+  }
+  
+  var startEvent = null;
+  var endEvent = null;
+  
+  for (var i = 0; i < events.length; i++) {
+    var title = events[i].getTitle();
+    if (title.indexOf("오전") > -1) startEvent = events[i];
+    if (title.indexOf("오후") > -1) endEvent = events[i];
+  }
+  
+  if (!startEvent || !endEvent) {
+    Logger.log("⚠️ 출퇴근 기록 없음");
+    return;
+  }
+  
+  var startTime = startEvent.getStartTime();
+  var endTime = endEvent.getEndTime();
+  var day = today.getDay();
+  var isWeekend = (day === 0 || day === 6);
+  var isHoliday = checkKoreanHoliday(today);
+  
+  var pay = 0;
+  var overtimeHours = 0;
+  
+  if (isWeekend || isHoliday) {
+    var overtimeStart = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 8, 0, 0);
+    if (endTime > overtimeStart) {
+      var compareTime = startTime > overtimeStart ? startTime : overtimeStart;
+      var rawMinutes = Math.floor((endTime - compareTime) / 1000 / 60);
+      var breakMinutes = endTime.getHours() >= 19 ? 120 : 90;
+      var actualMinutes = rawMinutes - breakMinutes;
+      if (actualMinutes < 0) actualMinutes = 0;
+      overtimeHours = Math.floor(actualMinutes / 60);
+      pay = overtimeHours * settings.HOURLY_WAGE * settings.OVERTIME_MULTIPLIER;
+    }
+  } else {
+    var overtimeStart = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 19, 0, 0);
+    if (endTime > overtimeStart) {
+      var actualMinutes = Math.floor((endTime - overtimeStart) / 1000 / 60);
+      overtimeHours = calculateOvertimeHours(actualMinutes);
+      pay = overtimeHours * settings.HOURLY_WAGE * settings.OVERTIME_MULTIPLIER;
+    }
+  }
+  
+  var yesterdayAccumulated = getMonthlyTotal(today);
+  
+  if (pay > 0) saveMonthlyTotal(today, pay, overtimeHours);
+  
+  var accumulated = getMonthlyTotal(today);
+  var monthName = today.getMonth() + 1;
+  
+  // 급여 계산
+  var monthlyBasePay = settings.BASE_SALARY + settings.FIXED_OVERTIME_ALLOWANCE + settings.PRODUCTION_BONUS;
+  var todayTotalEarned = monthlyBasePay + accumulated.totalPay;
+  
+  var taxableIncome = todayTotalEarned - settings.TOTAL_NON_TAXABLE;
+  
+  var nationalPension = Math.floor(todayTotalEarned * settings.NATIONAL_PENSION_RATE / 100);
+  var healthInsurance = Math.floor(todayTotalEarned * settings.HEALTH_INSURANCE_RATE / 100);
+  var longTermCare = Math.floor(healthInsurance * settings.LONG_TERM_CARE_RATE / 100);
+  var employmentInsurance = Math.floor(todayTotalEarned * settings.EMPLOYMENT_INSURANCE_RATE / 100);
+  var totalInsurance = nationalPension + healthInsurance + longTermCare + employmentInsurance;
+  
+  var incomeTax = calculateIncomeTax(taxableIncome, settings.DEPENDENTS, settings.TAX_ENABLED);
+  var localTax = Math.floor(incomeTax * settings.LOCAL_TAX_RATE / 100);
+  var totalTax = incomeTax + localTax;
+  
+  var totalDeduction = totalInsurance + totalTax;
+  var netSalary = todayTotalEarned - totalDeduction;
+  
+  // 설명 생성
+  var workType = isWeekend ? "주말" : (isHoliday ? "공휴일" : "평일");
+  var description = "";
+  
+  description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+  description += "💰 " + today.getFullYear() + "년 " + monthName + "월 " + today.getDate() + "일 오늘까지 급여\n";
+  description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+  description += "📅 " + workType + " | " + formatTime(startTime) + " - " + formatTime(endTime) + "\n\n";
+  
+  if (pay > 0) {
+    description += "【 오늘 잔업 】\n";
+    description += "▪️ 잔업시간: " + overtimeHours + "시간\n";
+    description += "▪️ 잔업비: " + formatNumber(Math.floor(pay)) + "원\n\n";
+  }
+  
+  description += "【 지급 내역 】\n";
+  description += "▪️ 기본급: " + formatNumber(settings.BASE_SALARY) + "원\n";
+  description += "▪️ 고정연장수당: " + formatNumber(settings.FIXED_OVERTIME_ALLOWANCE) + "원\n";
+  description += "▪️ 생산장려금: " + formatNumber(settings.PRODUCTION_BONUS) + "원\n";
+  description += "▪️ " + monthName + "월 잔업비 누적: " + formatNumber(Math.floor(accumulated.totalPay)) + "원\n";
+  description += "  (총 " + accumulated.totalHours + "시간 / " + accumulated.days + "일)\n\n";
+  description += "💰 총 급여: " + formatNumber(Math.floor(todayTotalEarned)) + "원\n\n";
+  
+  description += "【 공제 내역 】\n";
+  description += "▪️ 4대 보험료\n";
+  description += "  - 국민연금(" + settings.NATIONAL_PENSION_RATE + "%): " + formatNumber(nationalPension) + "원\n";
+  description += "  - 건강보험(" + settings.HEALTH_INSURANCE_RATE + "%): " + formatNumber(healthInsurance) + "원\n";
+  description += "  - 장기요양(" + settings.LONG_TERM_CARE_RATE + "%): " + formatNumber(longTermCare) + "원\n";
+  description += "  - 고용보험(" + settings.EMPLOYMENT_INSURANCE_RATE + "%): " + formatNumber(employmentInsurance) + "원\n";
+  description += "  - 소계: " + formatNumber(totalInsurance) + "원\n\n";
+  
+  if (settings.TAX_ENABLED) {
+    description += "▪️ 세금\n";
+    description += "  - 소득세: " + formatNumber(incomeTax) + "원\n";
+    description += "  - 지방소득세: " + formatNumber(localTax) + "원\n";
+    description += "  - 소계: " + formatNumber(totalTax) + "원\n\n";
+  }
+  
+  description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+  description += "📊 총 공제액: " + formatNumber(totalDeduction) + "원\n\n";
+  description += "💸 오늘까지 실수령액: " + formatNumber(netSalary) + "원 💸\n";
+  description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+  description += "【 참고 】\n";
+  description += "▪️ 어제까지 누적: " + formatNumber(Math.floor(yesterdayAccumulated.totalPay)) + "원\n";
+  description += "▪️ 오늘 증가: " + formatNumber(Math.floor(pay)) + "원\n";
+  description += "▪️ " + monthName + "월 잔업비는 " + (monthName + 2) + "월에 지급됩니다.\n";
+  
+  calendar.createEvent("💰 오늘 잔업비", 
+    new Date(today.getFullYear(), today.getMonth(), today.getDate(), 22, 0), 
+    new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 0), 
+    {description: description});
+  
+  Logger.log("✅ 계산 완료");
+}
+
+// ==========================================
+// 📅 메인_02: 이번달 과거 소급
+// ==========================================
+
+function 메인_02_이번달과거소급() {
+  var settings = getUserSettings();
+  var calendar = CalendarApp.getCalendarsByName(settings.CALENDAR_NAME)[0];
+  if (!calendar) {
+    Logger.log("❌ 캘린더 없음");
+    return;
+  }
+  
+  var today = new Date();
+  var startDate = new Date(today.getFullYear(), today.getMonth(), 1);
+  var endDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  
+  Logger.log("📅 과거 소급: " + formatDate(startDate) + " ~ " + formatDate(endDate));
+  
+  var totalCalculated = 0;
+  var currentDate = new Date(startDate);
+  
+  while (currentDate <= endDate) {
+    var startOfDay = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 0, 0, 0);
+    var endOfDay = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 23, 59, 59);
+    var events = calendar.getEvents(startOfDay, endOfDay);
+    
+    var alreadyCalculated = false;
+    for (var i = 0; i < events.length; i++) {
+      if (events[i].getTitle() === "💰 오늘 잔업비") {
+        alreadyCalculated = true;
+        break;
+      }
+    }
+    
+    if (alreadyCalculated) {
+      currentDate.setDate(currentDate.getDate() + 1);
+      continue;
+    }
+    
+    var startEvent = null;
+    var endEvent = null;
+    
+    for (var i = 0; i < events.length; i++) {
+      var title = events[i].getTitle();
+      if (title.indexOf("오전") > -1) startEvent = events[i];
+      if (title.indexOf("오후") > -1) endEvent = events[i];
+    }
+    
+    if (!startEvent || !endEvent) {
+      currentDate.setDate(currentDate.getDate() + 1);
+      continue;
+    }
+    
+    var startTime = startEvent.getStartTime();
+    var endTime = endEvent.getEndTime();
+    var day = currentDate.getDay();
+    var isWeekend = (day === 0 || day === 6);
+    var isHoliday = checkKoreanHoliday(currentDate);
+    
+    var pay = 0;
+    var overtimeHours = 0;
+    
+    if (isWeekend || isHoliday) {
+      var overtimeStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 8, 0, 0);
+      if (endTime > overtimeStart) {
+        var compareTime = startTime > overtimeStart ? startTime : overtimeStart;
+        var rawMinutes = Math.floor((endTime - compareTime) / 1000 / 60);
+        var breakMinutes = endTime.getHours() >= 19 ? 120 : 90;
+        var actualMinutes = rawMinutes - breakMinutes;
+        if (actualMinutes < 0) actualMinutes = 0;
+        overtimeHours = Math.floor(actualMinutes / 60);
+        pay = overtimeHours * settings.HOURLY_WAGE * settings.OVERTIME_MULTIPLIER;
+      }
+    } else {
+      var overtimeStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 19, 0, 0);
+      if (endTime > overtimeStart) {
+        var actualMinutes = Math.floor((endTime - overtimeStart) / 1000 / 60);
+        overtimeHours = calculateOvertimeHours(actualMinutes);
+        pay = overtimeHours * settings.HOURLY_WAGE * settings.OVERTIME_MULTIPLIER;
+      }
+    }
+    
+    var yesterdayAccumulated = getMonthlyTotal(currentDate);
+    if (pay > 0) saveMonthlyTotal(currentDate, pay, overtimeHours);
+    var accumulated = getMonthlyTotal(currentDate);
+    
+    var monthName = currentDate.getMonth() + 1;
+    var monthlyBasePay = settings.BASE_SALARY + settings.FIXED_OVERTIME_ALLOWANCE + settings.PRODUCTION_BONUS;
+    var todayTotalEarned = monthlyBasePay + accumulated.totalPay;
+    
+    var taxableIncome = todayTotalEarned - settings.TOTAL_NON_TAXABLE;
+    var nationalPension = Math.floor(todayTotalEarned * settings.NATIONAL_PENSION_RATE / 100);
+    var healthInsurance = Math.floor(todayTotalEarned * settings.HEALTH_INSURANCE_RATE / 100);
+    var longTermCare = Math.floor(healthInsurance * settings.LONG_TERM_CARE_RATE / 100);
+    var employmentInsurance = Math.floor(todayTotalEarned * settings.EMPLOYMENT_INSURANCE_RATE / 100);
+    var totalInsurance = nationalPension + healthInsurance + longTermCare + employmentInsurance;
+    
+    var incomeTax = calculateIncomeTax(taxableIncome, settings.DEPENDENTS, settings.TAX_ENABLED);
+    var localTax = Math.floor(incomeTax * settings.LOCAL_TAX_RATE / 100);
+    var totalTax = incomeTax + localTax;
+    var totalDeduction = totalInsurance + totalTax;
+    var netSalary = todayTotalEarned - totalDeduction;
+    
+    var workType = isWeekend ? "주말" : (isHoliday ? "공휴일" : "평일");
+    var description = "";
+    
+    description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    description += "💰 " + currentDate.getFullYear() + "년 " + monthName + "월 " + currentDate.getDate() + "일 오늘까지 급여\n";
+    description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+    description += "📅 " + workType + " | " + formatTime(startTime) + " - " + formatTime(endTime) + "\n\n";
+    
+    if (pay > 0) {
+      description += "【 오늘 잔업 】\n";
+      description += "▪️ 잔업시간: " + overtimeHours + "시간\n";
+      description += "▪️ 잔업비: " + formatNumber(Math.floor(pay)) + "원\n\n";
+    }
+    
+    description += "【 지급 내역 】\n";
+    description += "▪️ 기본급: " + formatNumber(settings.BASE_SALARY) + "원\n";
+    description += "▪️ 고정연장수당: " + formatNumber(settings.FIXED_OVERTIME_ALLOWANCE) + "원\n";
+    description += "▪️ 생산장려금: " + formatNumber(settings.PRODUCTION_BONUS) + "원\n";
+    description += "▪️ " + monthName + "월 잔업비 누적: " + formatNumber(Math.floor(accumulated.totalPay)) + "원\n";
+    description += "  (총 " + accumulated.totalHours + "시간 / " + accumulated.days + "일)\n\n";
+    description += "💰 총 급여: " + formatNumber(Math.floor(todayTotalEarned)) + "원\n\n";
+    
+    description += "【 공제 내역 】\n";
+    description += "▪️ 4대 보험료\n";
+    description += "  - 국민연금(" + settings.NATIONAL_PENSION_RATE + "%): " + formatNumber(nationalPension) + "원\n";
+    description += "  - 건강보험(" + settings.HEALTH_INSURANCE_RATE + "%): " + formatNumber(healthInsurance) + "원\n";
+    description += "  - 장기요양(" + settings.LONG_TERM_CARE_RATE + "%): " + formatNumber(longTermCare) + "원\n";
+    description += "  - 고용보험(" + settings.EMPLOYMENT_INSURANCE_RATE + "%): " + formatNumber(employmentInsurance) + "원\n";
+    description += "  - 소계: " + formatNumber(totalInsurance) + "원\n\n";
+    
+    if (settings.TAX_ENABLED) {
+      description += "▪️ 세금\n";
+      description += "  - 소득세: " + formatNumber(incomeTax) + "원\n";
+      description += "  - 지방소득세: " + formatNumber(localTax) + "원\n";
+      description += "  - 소계: " + formatNumber(totalTax) + "원\n\n";
+    }
+    
+    description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    description += "📊 총 공제액: " + formatNumber(totalDeduction) + "원\n\n";
+    description += "💸 오늘까지 실수령액: " + formatNumber(netSalary) + "원 💸\n";
+    description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+    description += "【 참고 】\n";
+    description += "▪️ 어제까지 누적: " + formatNumber(Math.floor(yesterdayAccumulated.totalPay)) + "원\n";
+    description += "▪️ 오늘 증가: " + formatNumber(Math.floor(pay)) + "원\n";
+    description += "▪️ " + monthName + "월 잔업비는 " + (monthName + 2) + "월에 지급됩니다.\n";
+    
+    calendar.createEvent("💰 오늘 잔업비", 
+      new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 22, 0), 
+      new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 23, 0), 
+      {description: description});
+    
+    totalCalculated++;
+    Logger.log("✅ " + formatDate(currentDate));
+    
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+  
+  Logger.log("🎉 총 " + totalCalculated + "일 완료!");
+}
+
+// ==========================================
+// 📅 메인_03: 여러달 한번에 계산
+// ==========================================
+
+function 메인_03_여러달한번에() {
+  var YEAR = 2025;
+  var START_MONTH = 8;   // 👈 시작 월
+  var END_MONTH = 11;    // 👈 끝 월
+  
+  var settings = getUserSettings();
+  var calendar = CalendarApp.getCalendarsByName(settings.CALENDAR_NAME)[0];
+  
+  if (!calendar) {
+    Logger.log("❌ 캘린더 없음");
+    return;
+  }
+  
+  Logger.log("=".repeat(70));
+  Logger.log("📅 " + YEAR + "년 " + START_MONTH + "월 ~ " + END_MONTH + "월 한번에 계산");
+  Logger.log("=".repeat(70));
+  Logger.log("");
+  
+  var totalDays = 0;
+  
+  for (var month = START_MONTH; month <= END_MONTH; month++) {
+    Logger.log("【 " + month + "월 계산 시작 】");
+    Logger.log("");
+    
+    var startDate = new Date(YEAR, month - 1, 1);
+    var endDate = new Date(YEAR, month, 0);
+    
+    var monthCalculated = 0;
+    var currentDate = new Date(startDate);
+    
+    while (currentDate <= endDate) {
+      var startOfDay = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 0, 0, 0);
+      var endOfDay = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 23, 59, 59);
+      var events = calendar.getEvents(startOfDay, endOfDay);
+      
+      var alreadyCalculated = false;
+      for (var i = 0; i < events.length; i++) {
+        if (events[i].getTitle() === "💰 오늘 잔업비") {
+          alreadyCalculated = true;
+          break;
+        }
+      }
+      
+      if (alreadyCalculated) {
+        Logger.log("⏭️ " + currentDate.getDate() + "일 - 이미 계산됨");
+        currentDate.setDate(currentDate.getDate() + 1);
+        continue;
+      }
+      
+      var startEvent = null;
+      var endEvent = null;
+      
+      for (var i = 0; i < events.length; i++) {
+        var title = events[i].getTitle();
+        if (title.indexOf("오전") > -1) startEvent = events[i];
+        if (title.indexOf("오후") > -1) endEvent = events[i];
+      }
+      
+      if (!startEvent || !endEvent) {
+        Logger.log("⚠️ " + currentDate.getDate() + "일 - 출퇴근 기록 없음");
+        currentDate.setDate(currentDate.getDate() + 1);
+        continue;
+      }
+      
+      var startTime = startEvent.getStartTime();
+      var endTime = endEvent.getEndTime();
+      var day = currentDate.getDay();
+      var isWeekend = (day === 0 || day === 6);
+      var isHoliday = checkKoreanHoliday(currentDate);
+      
+      var pay = 0;
+      var overtimeHours = 0;
+      
+      if (isWeekend || isHoliday) {
+        var overtimeStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 8, 0, 0);
+        if (endTime > overtimeStart) {
+          var compareTime = startTime > overtimeStart ? startTime : overtimeStart;
+          var rawMinutes = Math.floor((endTime - compareTime) / 1000 / 60);
+          var breakMinutes = endTime.getHours() >= 19 ? 120 : 90;
+          var actualMinutes = rawMinutes - breakMinutes;
+          if (actualMinutes < 0) actualMinutes = 0;
+          overtimeHours = Math.floor(actualMinutes / 60);
+          pay = overtimeHours * settings.HOURLY_WAGE * settings.OVERTIME_MULTIPLIER;
+        }
+      } else {
+        var overtimeStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 19, 0, 0);
+        if (endTime > overtimeStart) {
+          var actualMinutes = Math.floor((endTime - overtimeStart) / 1000 / 60);
+          overtimeHours = calculateOvertimeHours(actualMinutes);
+          pay = overtimeHours * settings.HOURLY_WAGE * settings.OVERTIME_MULTIPLIER;
+        }
+      }
+      
+      var yesterdayAccumulated = getMonthlyTotal(currentDate);
+      if (pay > 0) saveMonthlyTotal(currentDate, pay, overtimeHours);
+      var accumulated = getMonthlyTotal(currentDate);
+      
+      var monthName = currentDate.getMonth() + 1;
+      var monthlyBasePay = settings.BASE_SALARY + settings.FIXED_OVERTIME_ALLOWANCE + settings.PRODUCTION_BONUS;
+      var todayTotalEarned = monthlyBasePay + accumulated.totalPay;
+      
+      var taxableIncome = todayTotalEarned - settings.TOTAL_NON_TAXABLE;
+      var nationalPension = Math.floor(todayTotalEarned * settings.NATIONAL_PENSION_RATE / 100);
+      var healthInsurance = Math.floor(todayTotalEarned * settings.HEALTH_INSURANCE_RATE / 100);
+      var longTermCare = Math.floor(healthInsurance * settings.LONG_TERM_CARE_RATE / 100);
+      var employmentInsurance = Math.floor(todayTotalEarned * settings.EMPLOYMENT_INSURANCE_RATE / 100);
+      var totalInsurance = nationalPension + healthInsurance + longTermCare + employmentInsurance;
+      
+      var incomeTax = calculateIncomeTax(taxableIncome, settings.DEPENDENTS, settings.TAX_ENABLED);
+      var localTax = Math.floor(incomeTax * settings.LOCAL_TAX_RATE / 100);
+      var totalTax = incomeTax + localTax;
+      var totalDeduction = totalInsurance + totalTax;
+      var netSalary = todayTotalEarned - totalDeduction;
+      
+      var workType = isWeekend ? "주말" : (isHoliday ? "공휴일" : "평일");
+      var description = "";
+      
+      description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+      description += "💰 " + currentDate.getFullYear() + "년 " + monthName + "월 " + currentDate.getDate() + "일 오늘까지 급여\n";
+      description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+      description += "📅 " + workType + " | " + formatTime(startTime) + " - " + formatTime(endTime) + "\n\n";
+      
+      if (pay > 0) {
+        description += "【 오늘 잔업 】\n";
+        description += "▪️ 잔업시간: " + overtimeHours + "시간\n";
+        description += "▪️ 잔업비: " + formatNumber(Math.floor(pay)) + "원\n\n";
+      }
+      
+      description += "【 지급 내역 】\n";
+      description += "▪️ 기본급: " + formatNumber(settings.BASE_SALARY) + "원\n";
+      description += "▪️ 고정연장수당: " + formatNumber(settings.FIXED_OVERTIME_ALLOWANCE) + "원\n";
+      description += "▪️ 생산장려금: " + formatNumber(settings.PRODUCTION_BONUS) + "원\n";
+      description += "▪️ " + monthName + "월 잔업비 누적: " + formatNumber(Math.floor(accumulated.totalPay)) + "원\n";
+      description += "  (총 " + accumulated.totalHours + "시간 / " + accumulated.days + "일)\n\n";
+      description += "💰 총 급여: " + formatNumber(Math.floor(todayTotalEarned)) + "원\n\n";
+      
+      description += "【 공제 내역 】\n";
+      description += "▪️ 4대 보험료\n";
+      description += "  - 국민연금(" + settings.NATIONAL_PENSION_RATE + "%): " + formatNumber(nationalPension) + "원\n";
+      description += "  - 건강보험(" + settings.HEALTH_INSURANCE_RATE + "%): " + formatNumber(healthInsurance) + "원\n";
+      description += "  - 장기요양(" + settings.LONG_TERM_CARE_RATE + "%): " + formatNumber(longTermCare) + "원\n";
+      description += "  - 고용보험(" + settings.EMPLOYMENT_INSURANCE_RATE + "%): " + formatNumber(employmentInsurance) + "원\n";
+      description += "  - 소계: " + formatNumber(totalInsurance) + "원\n\n";
+      
+      if (settings.TAX_ENABLED) {
+        description += "▪️ 세금\n";
+        description += "  - 소득세: " + formatNumber(incomeTax) + "원\n";
+        description += "  - 지방소득세: " + formatNumber(localTax) + "원\n";
+        description += "  - 소계: " + formatNumber(totalTax) + "원\n\n";
+      }
+      
+      description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+      description += "📊 총 공제액: " + formatNumber(totalDeduction) + "원\n\n";
+      description += "💸 오늘까지 실수령액: " + formatNumber(netSalary) + "원 💸\n";
+      description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+      description += "【 참고 】\n";
+      description += "▪️ 어제까지 누적: " + formatNumber(Math.floor(yesterdayAccumulated.totalPay)) + "원\n";
+      description += "▪️ 오늘 증가: " + formatNumber(Math.floor(pay)) + "원\n";
+      description += "▪️ " + monthName + "월 잔업비는 " + (monthName + 2) + "월에 지급됩니다.\n";
+      
+      calendar.createEvent("💰 오늘 잔업비", 
+        new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 22, 0), 
+        new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 23, 0), 
+        {description: description});
+      
+      monthCalculated++;
+      Logger.log("✅ " + currentDate.getDate() + "일 - " + overtimeHours + "h / " + formatNumber(Math.floor(pay)) + "원");
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    
+    createMonthlyPayslipForMonth(YEAR, month);
+    
+    Logger.log("");
+    Logger.log("📊 " + month + "월 완료: " + monthCalculated + "일");
+    Logger.log("");
+    
+    totalDays += monthCalculated;
+  }
+  
+  Logger.log("=".repeat(70));
+  Logger.log("🎉 전체 완료!");
+  Logger.log("총 " + totalDays + "일 계산");
+  Logger.log("=".repeat(70));
+}
+
+// ==========================================
+// 💵 월말 급여 명세서 생성
+// ==========================================
+
+function createMonthlyPayslipForMonth(year, month) {
+  var settings = getUserSettings();
+  var calendar = CalendarApp.getCalendarsByName(settings.CALENDAR_NAME)[0];
+  
+  if (!calendar) return;
+  
+  var lastDay = new Date(year, month, 0);
+  var lastDayDate = lastDay.getDate();
+  
+  var startOfDay = new Date(year, month - 1, lastDayDate, 0, 0, 0);
+  var endOfDay = new Date(year, month - 1, lastDayDate, 23, 59, 59);
+  var events = calendar.getEvents(startOfDay, endOfDay);
+  
+  for (var i = 0; i < events.length; i++) {
+    if (events[i].getTitle().indexOf("💵") > -1) {
+      Logger.log("⏭️ " + month + "월 명세서 이미 존재");
+      return;
+    }
+  }
+  
+  var targetDate = new Date(year, month - 1, 15);
+  var delayedOvertime = getDelayedOvertimePay(targetDate);
+  var currentMonthOvertime = getMonthlyTotal(targetDate);
+  
+  var monthlyBasePay = settings.BASE_SALARY + settings.FIXED_OVERTIME_ALLOWANCE + settings.PRODUCTION_BONUS;
+  var totalGrossSalary = monthlyBasePay + delayedOvertime.pay;
+  var taxableIncome = totalGrossSalary - settings.TOTAL_NON_TAXABLE;
+  
+  var nationalPension = Math.floor(totalGrossSalary * settings.NATIONAL_PENSION_RATE / 100);
+  var healthInsurance = Math.floor(totalGrossSalary * settings.HEALTH_INSURANCE_RATE / 100);
+  var longTermCare = Math.floor(healthInsurance * settings.LONG_TERM_CARE_RATE / 100);
+  var employmentInsurance = Math.floor(totalGrossSalary * settings.EMPLOYMENT_INSURANCE_RATE / 100);
+  var totalInsurance = nationalPension + healthInsurance + longTermCare + employmentInsurance;
+  
+  var incomeTax = calculateIncomeTax(taxableIncome, settings.DEPENDENTS, settings.TAX_ENABLED);
+  var localTax = Math.floor(incomeTax * settings.LOCAL_TAX_RATE / 100);
+  var totalTax = incomeTax + localTax;
+  var totalDeduction = totalInsurance + totalTax;
+  var netSalary = totalGrossSalary - totalDeduction;
+  
+  var title = "💵 " + month + "월 급여 명세서";
+  var description = "";
+  
+  description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+  description += "💰 " + year + "년 " + month + "월 급여 명세서\n";
+  description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+  
+  description += "【 지급 내역 】\n";
+  description += "▪️ 기본급: " + formatNumber(settings.BASE_SALARY) + "원\n";
+  description += "▪️ 고정연장수당: " + formatNumber(settings.FIXED_OVERTIME_ALLOWANCE) + "원\n";
+  description += "▪️ 생산장려금: " + formatNumber(settings.PRODUCTION_BONUS) + "원\n";
+  
+  if (delayedOvertime.pay > 0) {
+    description += "▪️ " + delayedOvertime.month + "월 잔업비: " + formatNumber(Math.floor(delayedOvertime.pay)) + "원\n";
+    description += "  (총 " + Math.floor(delayedOvertime.hours) + "시간)\n";
+  }
+  
+  description += "\n💰 총 급여: " + formatNumber(totalGrossSalary) + "원\n\n";
+  
+  description += "【 공제 내역 】\n";
+  description += "▪️ 4대 보험료\n";
+  description += "  - 국민연금(" + settings.NATIONAL_PENSION_RATE + "%): " + formatNumber(nationalPension) + "원\n";
+  description += "  - 건강보험(" + settings.HEALTH_INSURANCE_RATE + "%): " + formatNumber(healthInsurance) + "원\n";
+  description += "  - 장기요양(" + settings.LONG_TERM_CARE_RATE + "%): " + formatNumber(longTermCare) + "원\n";
+  description += "  - 고용보험(" + settings.EMPLOYMENT_INSURANCE_RATE + "%): " + formatNumber(employmentInsurance) + "원\n";
+  description += "  - 소계: " + formatNumber(totalInsurance) + "원\n\n";
+  
+  if (settings.TAX_ENABLED) {
+    description += "▪️ 세금\n";
+    description += "  - 소득세: " + formatNumber(incomeTax) + "원\n";
+    description += "  - 지방소득세: " + formatNumber(localTax) + "원\n";
+    description += "  - 소계: " + formatNumber(totalTax) + "원\n\n";
+  }
+  
+  description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+  description += "📊 총 공제액: " + formatNumber(totalDeduction) + "원\n\n";
+  description += "💸 실수령액: " + formatNumber(netSalary) + "원 💸\n";
+  description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
+  
+  if (currentMonthOvertime.totalPay > 0) {
+    description += "【 참고: " + month + "월 잔업비 누적 】\n";
+    description += "▪️ 누적 금액: " + formatNumber(Math.floor(currentMonthOvertime.totalPay)) + "원\n";
+    description += "▪️ 누적 시간: " + currentMonthOvertime.totalHours + "시간\n";
+    description += "▪️ 근무 일수: " + currentMonthOvertime.days + "일\n";
+    description += "▪️ 지급 예정: " + (month + 2) + "월 급여\n\n";
+    description += "* 이번 달 잔업비는 2개월 후 지급됩니다.\n";
+  }
+  
+  calendar.createEvent(title,
+    new Date(year, month - 1, lastDayDate, 18, 0),
+    new Date(year, month - 1, lastDayDate, 19, 0),
+    {description: description});
+  
+  Logger.log("💵 " + month + "월 급여 명세서 생성!");
+}
+
+// ==========================================
+// 🗑️ 삭제_01: 전체 완전 삭제
+// ==========================================
+
+function 삭제_01_전체완전삭제() {
+  Logger.log("=".repeat(70));
+  Logger.log("🗑️ 전체 완전 삭제");
+  Logger.log("=".repeat(70));
+  Logger.log("");
+  
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var allKeys = scriptProperties.getKeys();
+  var deletedDataCount = 0;
+  
+  for (var i = 0; i < allKeys.length; i++) {
+    var key = allKeys[i];
+    if (key.indexOf("-total-") > -1) {
+      scriptProperties.deleteProperty(key);
+      Logger.log("✅ " + key);
+      deletedDataCount++;
+    }
+  }
+  
+  Logger.log("📊 데이터 " + deletedDataCount + "개 삭제");
+  Logger.log("");
+  
+  var allCalendars = CalendarApp.getAllCalendars();
+  var totalDeletedEvents = 0;
+  var startDate = new Date(2020, 0, 1);
+  var endDate = new Date(2030, 11, 31);
+  
+  for (var c = 0; c < allCalendars.length; c++) {
+    var calendar = allCalendars[c];
+    var events = calendar.getEvents(startDate, endDate);
+    
+    for (var i = 0; i < events.length; i++) {
+      var title = events[i].getTitle();
+      
+      if (title && (title.indexOf("💰") >= 0 || title.indexOf("💵") >= 0 || title.indexOf("잔업") >= 0 || title.indexOf("급여") >= 0)) {
+        try {
+          events[i].deleteEvent();
+          totalDeletedEvents++;
+        } catch (e) {}
+      }
+    }
+  }
+  
+  Logger.log("📅 이벤트 " + totalDeletedEvents + "개 삭제");
+  Logger.log("");
+  Logger.log("=".repeat(70));
+  Logger.log("🎉 삭제 완료!");
+  Logger.log("=".repeat(70));
+}
+
+// ==========================================
+// 🗑️ 삭제_02: 특정월 완전 삭제
+// ==========================================
+
+function 삭제_02_특정월완전삭제() {
+  var YEAR = 2025;
+  var MONTH = 11;  // 👈 여기 수정!
+  
+  Logger.log("=".repeat(70));
+  Logger.log("🗑️ " + YEAR + "년 " + MONTH + "월 삭제");
+  Logger.log("=".repeat(70));
+  Logger.log("");
+  
+  var scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.deleteProperty(YEAR + "-" + MONTH + "-total-pay");
+  scriptProperties.deleteProperty(YEAR + "-" + MONTH + "-total-hours");
+  scriptProperties.deleteProperty(YEAR + "-" + MONTH + "-total-days");
+  Logger.log("✅ 데이터 삭제");
+  Logger.log("");
+  
+  var allCalendars = CalendarApp.getAllCalendars();
+  var startDate = new Date(YEAR, MONTH - 1, 1);
+  var endDate = new Date(YEAR, MONTH, 0, 23, 59, 59);
+  var totalDeleted = 0;
+  
+  for (var c = 0; c < allCalendars.length; c++) {
+    var calendar = allCalendars[c];
+    var events = calendar.getEvents(startDate, endDate);
+    
+    for (var i = 0; i < events.length; i++) {
+      var title = events[i].getTitle();
+      if (title && (title.indexOf("💰") >= 0 || title.indexOf("💵") >= 0)) {
+        try {
+          events[i].deleteEvent();
+          totalDeleted++;
+        } catch (e) {}
+      }
+    }
+  }
+  
+  Logger.log("📅 이벤트 " + totalDeleted + "개 삭제");
+  Logger.log("🎉 완료!");
+  Logger.log("=".repeat(70));
+}
+
+// ==========================================
+// 🔍 확인_01: 남은 이벤트 찾기
+// ==========================================
+
+function 확인_01_남은이벤트찾기() {
+  Logger.log("=".repeat(70));
+  Logger.log("🔍 남은 이벤트 검색");
+  Logger.log("=".repeat(70));
+  Logger.log("");
+  
+  var allCalendars = CalendarApp.getAllCalendars();
+  var startDate = new Date(2020, 0, 1);
+  var endDate = new Date(2030, 11, 31);
+  var foundEvents = [];
+  
+  for (var c = 0; c < allCalendars.length; c++) {
+    var calendar = allCalendars[c];
+    var events = calendar.getEvents(startDate, endDate);
+    
+    for (var i = 0; i < events.length; i++) {
+      var title = events[i].getTitle();
+      if (title && (title.indexOf("💰") >= 0 || title.indexOf("💵") >= 0 || title.indexOf("잔업") >= 0)) {
+        foundEvents.push({
+          calendar: calendar.getName(),
+          date: events[i].getStartTime(),
+          title: title
+        });
+      }
+    }
+  }
+  
+  if (foundEvents.length === 0) {
+    Logger.log("✅ 남은 이벤트 없음!");
+  } else {
+    Logger.log("⚠️ 남은 이벤트: " + foundEvents.length + "개");
+    Logger.log("");
+    
+    foundEvents.sort(function(a, b) { return a.date - b.date; });
+    
+    for (var i = 0; i < foundEvents.length; i++) {
+      Logger.log((i + 1) + ". " + formatDate(foundEvents[i].date) + " - " + foundEvents[i].title);
+    }
+  }
+  
+  Logger.log("");
+  Logger.log("=".repeat(70));
+}
+
+// ==========================================
+// 🔍 확인_02: 캘린더 설정
+// ==========================================
+
+function 확인_02_캘린더설정() {
+  var settings = getUserSettings();
+  
+  Logger.log("=".repeat(70));
+  Logger.log("📋 캘린더 설정 확인");
+  Logger.log("=".repeat(70));
+  Logger.log("");
+  Logger.log("설정: " + settings.CALENDAR_NAME);
+  Logger.log("부양가족 수: " + settings.DEPENDENTS);
+  Logger.log("소득세 계산: " + settings.TAX_ENABLED);
+  Logger.log("");
+  
+  var calendar = CalendarApp.getCalendarsByName(settings.CALENDAR_NAME)[0];
+  
+  if (calendar) {
+    Logger.log("✅ 캘린더 찾음!");
+    Logger.log("  이름: " + calendar.getName());
+  } else {
+    Logger.log("❌ 캘린더 없음!");
+    Logger.log("");
+    Logger.log("【 사용 가능한 캘린더 】");
+    var allCalendars = CalendarApp.getAllCalendars();
+    for (var i = 0; i < allCalendars.length; i++) {
+      Logger.log((i + 1) + ". " + allCalendars[i].getName());
+    }
+  }
+  
+  Logger.log("");
+  Logger.log("=".repeat(70));
+}
+
+// ==========================================
+// 📊 확인_03: 저장된 데이터
+// ==========================================
+
+function 확인_03_저장된데이터() {
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var allKeys = scriptProperties.getKeys();
+  
+  Logger.log("=".repeat(60));
+  Logger.log("📊 저장된 데이터");
+  Logger.log("=".repeat(60));
+  Logger.log("");
+  
+  var dataByYear = {};
+  for (var i = 0; i < allKeys.length; i++) {
+    var key = allKeys[i];
+    if (key.indexOf("-total-") > -1) {
+      var parts = key.split("-");
+      var year = parts[0];
+      var month = parts[1];
+      if (!dataByYear[year]) dataByYear[year] = {};
+      if (!dataByYear[year][month]) dataByYear[year][month] = {};
+      var value = scriptProperties.getProperty(key);
+      if (key.indexOf("-total-pay") > -1) {
+        dataByYear[year][month].pay = parseFloat(value);
+      } else if (key.indexOf("-total-hours") > -1) {
+        dataByYear[year][month].hours = parseFloat(value);
+      } else if (key.indexOf("-total-days") > -1) {
+        dataByYear[year][month].days = parseFloat(value);
+      }
+    }
+  }
+  
+  var years = Object.keys(dataByYear).sort();
+  if (years.length === 0) {
+    Logger.log("📭 저장된 데이터 없음");
+  } else {
+    for (var i = 0; i < years.length; i++) {
+      var year = years[i];
+      Logger.log("【 " + year + "년 】");
+      var months = Object.keys(dataByYear[year]).sort(function(a, b) { return parseInt(a) - parseInt(b); });
+      for (var j = 0; j < months.length; j++) {
+        var month = months[j];
+        var data = dataByYear[year][month];
+        Logger.log("  " + month + "월: " + formatNumber(Math.floor(data.pay || 0)) + "원 (" + (data.hours || 0) + "h / " + (data.days || 0) + "일)");
+      }
+      Logger.log("");
+    }
+  }
+  
+  Logger.log("=".repeat(60));
+}
+
+// ==========================================
+// 보조 함수들
+// ==========================================
+
+function calculateOvertimeHours(minutes) {
+  if (minutes < 50) return 0;
+  return Math.floor((minutes - 50) / 60) + 1;
+}
+
+function formatTime(date) {
+  var h = String(date.getHours());
+  var m = String(date.getMinutes());
+  if (h.length === 1) h = "0" + h;
+  if (m.length === 1) m = "0" + m;
+  return h + ":" + m;
+}
+
+function formatNumber(num) {
+  return Math.floor(num).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function formatDate(date) {
+  return date.getFullYear() + "년 " + (date.getMonth() + 1) + "월 " + date.getDate() + "일";
+}
+
+function checkKoreanHoliday(date) {
+  var holidayCalendar = CalendarApp.getCalendarsByName("대한민국의 공휴일")[0];
+  if (holidayCalendar) {
+    var start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
+    var end = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59);
+    var events = holidayCalendar.getEvents(start, end);
+    if (events.length > 0) return true;
+  }
+  var year = date.getFullYear();
+  var holidays = getHolidaysByYear(year);
+  var dateString = year + "-" + ("0" + (date.getMonth() + 1)).slice(-2) + "-" + ("0" + date.getDate()).slice(-2);
+  for (var i = 0; i < holidays.length; i++) {
+    if (holidays[i] === dateString) return true;
+  }
+  return false;
+}
+
+function getHolidaysByYear(year) {
+  var holidays = {
+    "2025": ["2025-01-01","2025-01-28","2025-01-29","2025-01-30","2025-03-01","2025-03-03","2025-05-05","2025-05-06","2025-06-06","2025-08-15","2025-10-03","2025-10-05","2025-10-06","2025-10-07","2025-10-08","2025-10-09","2025-12-25"]
+  };
+  return holidays[year.toString()] || [];
+}
+
+function saveMonthlyTotal(today, pay, hours) {
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var keyPay = today.getFullYear() + "-" + (today.getMonth() + 1) + "-total-pay";
+  var keyHours = today.getFullYear() + "-" + (today.getMonth() + 1) + "-total-hours";
+  var keyDays = today.getFullYear() + "-" + (today.getMonth() + 1) + "-total-days";
+  var previousPay = parseFloat(scriptProperties.getProperty(keyPay)) || 0;
+  var previousHours = parseFloat(scriptProperties.getProperty(keyHours)) || 0;
+  var previousDays = parseFloat(scriptProperties.getProperty(keyDays)) || 0;
+  scriptProperties.setProperty(keyPay, (previousPay + pay).toString());
+  scriptProperties.setProperty(keyHours, (previousHours + hours).toString());
+  scriptProperties.setProperty(keyDays, (previousDays + 1).toString());
+  return { totalPay: previousPay + pay, totalHours: previousHours + hours, days: previousDays + 1 };
+}
+
+function getMonthlyTotal(today) {
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var keyPay = today.getFullYear() + "-" + (today.getMonth() + 1) + "-total-pay";
+  var keyHours = today.getFullYear() + "-" + (today.getMonth() + 1) + "-total-hours";
+  var keyDays = today.getFullYear() + "-" + (today.getMonth() + 1) + "-total-days";
+  return {
+    totalPay: parseFloat(scriptProperties.getProperty(keyPay)) || 0,
+    totalHours: parseFloat(scriptProperties.getProperty(keyHours)) || 0,
+    days: parseFloat(scriptProperties.getProperty(keyDays)) || 0
+  };
+}
+
+function getDelayedOvertimePay(currentDate) {
+  var settings = getUserSettings();
+  var delay = settings.OVERTIME_PAY_DELAY_MONTHS;
+  var targetDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - delay, 1);
+  var targetYear = targetDate.getFullYear();
+  var targetMonth = targetDate.getMonth() + 1;
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var keyPay = targetYear + "-" + targetMonth + "-total-pay";
+  var keyHours = targetYear + "-" + targetMonth + "-total-hours";
+  return {
+    pay: parseFloat(scriptProperties.getProperty(keyPay)) || 0,
+    hours: parseFloat(scriptProperties.getProperty(keyHours)) || 0,
+    month: targetMonth,
+    year: targetYear
+  };
+}
+
+/**
+ * 월총급여액을 기준으로 소득세를 간이세액표에서 조회하는 함수
+ * @param {number} monthlyIncome 소득세 조회용 월총급여액 (비과세 제외)
+ * @param {number} dependents 부양가족 수
+ * @param {boolean} taxEnabled 소득세 계산 여부
+ * @return {number} 조회된 소득세액
+ */
+function calculateIncomeTax(monthlyIncome, dependents, taxEnabled) {
+  if (!taxEnabled) return 0;
+  
+  var taxTable = getTaxTable();
+  var table = taxTable[dependents] || taxTable[1];
+  
+  // 소득세 간이세액표는 '천원' 단위이므로 1000으로 나눕니다.
+  var monthlySalaryInThousands = monthlyIncome / 1000;
+  
+  var incomeTax = 0;
+  
+  // 구간 검색
+  for (var i = 0; i < table.length; i++) {
+    var row = table[i];
+    
+    // 급여 구간 일치 확인 (이상(min) <= 급여 < 미만(max))
+    if (monthlySalaryInThousands >= row.min && monthlySalaryInThousands < row.max) {
+      // 해당 구간의 소득세액
+      incomeTax = row.tax;
+      break;
+    }
+  }
+  
+  // 1000만원 이상인 경우 추가 계산
+  if (monthlySalaryInThousands >= 10000) {
+    var lastEntry = table[table.length - 1];
+    incomeTax = lastEntry.tax + (monthlySalaryInThousands - 10000) * 350;
+  }
+  
+  return Math.floor(incomeTax);
+}
+
+/**
+ * 2025년 근로소득 간이세액표 (부양가족 1명 기준)
+ * @return {Object} 부양가족별 세액표
+ */
+function getTaxTable() {
+  var table1 = [
+    {min: 770, max: 1000, tax: 0}, {min: 1000, max: 1005, tax: 0}, {min: 1005, max: 1010, tax: 0},
+    {min: 1010, max: 1015, tax: 0}, {min: 1015, max: 1020, tax: 0}, {min: 1020, max: 1025, tax: 0},
+    {min: 1025, max: 1030, tax: 0}, {min: 1030, max: 1035, tax: 0}, {min: 1035, max: 1040, tax: 0},
+    {min: 1040, max: 1045, tax: 0}, {min: 1045, max: 1050, tax: 0}, {min: 1050, max: 1055, tax: 0},
+    {min: 1055, max: 1060, tax: 0}, {min: 1060, max: 1065, tax: 0}, {min: 1065, max: 1070, tax: 100},
+    {min: 1070, max: 1075, tax: 200}, {min: 1075, max: 1080, tax: 300}, {min: 1080, max: 1085, tax: 400},
+    {min: 1085, max: 1090, tax: 500}, {min: 1090, max: 1095, tax: 700}, {min: 1095, max: 1100, tax: 800},
+    {min: 1100, max: 1105, tax: 1000}, {min: 1105, max: 1110, tax: 1100}, {min: 1110, max: 1115, tax: 1200},
+    {min: 1115, max: 1120, tax: 1300}, {min: 1120, max: 1125, tax: 1400}, {min: 1125, max: 1130, tax: 1500},
+    {min: 1130, max: 1135, tax: 1600}, {min: 1135, max: 1140, tax: 1700}, {min: 1140, max: 1145, tax: 1900},
+    {min: 1145, max: 1150, tax: 2000}, {min: 1150, max: 1155, tax: 2100}, {min: 1155, max: 1160, tax: 2200},
+    {min: 1160, max: 1165, tax: 2300}, {min: 1165, max: 1170, tax: 2400}, {min: 1170, max: 1175, tax: 2500},
+    {min: 1175, max: 1180, tax: 2600}, {min: 1180, max: 1185, tax: 2700}, {min: 1185, max: 1190, tax: 2900},
+    {min: 1190, max: 1195, tax: 3000}, {min: 1195, max: 1200, tax: 3100}, {min: 1200, max: 1210, tax: 3200},
+    {min: 1210, max: 1220, tax: 4300}, {min: 1220, max: 1230, tax: 5400}, {min: 1230, max: 1240, tax: 6600},
+    {min: 1240, max: 1250, tax: 7700}, {min: 1250, max: 1260, tax: 8800}, {min: 1260, max: 1270, tax: 9900},
+    {min: 1270, max: 1280, tax: 11000}, {min: 1280, max: 1290, tax: 12200}, {min: 1290, max: 1300, tax: 13300},
+    {min: 1300, max: 1310, tax: 14400}, {min: 1310, max: 1320, tax: 15500}, {min: 1320, max: 1330, tax: 16600},
+    {min: 1330, max: 1340, tax: 17800}, {min: 1340, max: 1350, tax: 18900}, {min: 1350, max: 1360, tax: 20000},
+    {min: 1360, max: 1370, tax: 21100}, {min: 1370, max: 1380, tax: 22200}, {min: 1380, max: 1390, tax: 23400},
+    {min: 1390, max: 1400, tax: 24500}, {min: 1400, max: 1410, tax: 25600}, {min: 1410, max: 1420, tax: 26700},
+    {min: 1420, max: 1430, tax: 27800}, {min: 1430, max: 1440, tax: 29000}, {min: 1440, max: 1450, tax: 30100},
+    {min: 1450, max: 1460, tax: 31200}, {min: 1460, max: 1470, tax: 32300}, {min: 1470, max: 1480, tax: 33400},
+    {min: 1480, max: 1490, tax: 34600}, {min: 1490, max: 1500, tax: 35700}, {min: 1500, max: 1520, tax: 36800},
+    {min: 1520, max: 1540, tax: 39100}, {min: 1540, max: 1560, tax: 41400}, {min: 1560, max: 1580, tax: 43700},
+    {min: 1580, max: 1600, tax: 46000}, {min: 1600, max: 1620, tax: 48400}, {min: 1620, max: 1640, tax: 50700},
+    {min: 1640, max: 1660, tax: 53000}, {min: 1660, max: 1680, tax: 55300}, {min: 1680, max: 1700, tax: 57600},
+    {min: 1700, max: 1720, tax: 60000}, {min: 1720, max: 1740, tax: 62300}, {min: 1740, max: 1760, tax: 64600},
+    {min: 1760, max: 1780, tax: 66900}, {min: 1780, max: 1800, tax: 69200}, {min: 1800, max: 1820, tax: 71600},
+    {min: 1820, max: 1840, tax: 73900}, {min: 1840, max: 1860, tax: 76200}, {min: 1860, max: 1880, tax: 78500},
+    {min: 1880, max: 1900, tax: 80800}, {min: 1900, max: 1920, tax: 83200}, {min: 1920, max: 1940, tax: 85500},
+    {min: 1940, max: 1960, tax: 87800}, {min: 1960, max: 1980, tax: 90100}, {min: 1980, max: 2000, tax: 92400},
+    {min: 2000, max: 2010, tax: 94800}, {min: 2010, max: 2020, tax: 96050}, {min: 2020, max: 2030, tax: 97300},
+    {min: 2030, max: 2040, tax: 98550}, {min: 2040, max: 2050, tax: 99800}, {min: 2050, max: 2060, tax: 101050},
+    {min: 2060, max: 2070, tax: 102300}, {min: 2070, max: 2080, tax: 103550}, {min: 2080, max: 2090, tax: 104800},
+    {min: 2090, max: 2100, tax: 106050}, {min: 2100, max: 2110, tax: 107300}, {min: 2110, max: 2120, tax: 108550},
+    {min: 2120, max: 2130, tax: 109800}, {min: 2130, max: 2140, tax: 111050}, {min: 2140, max: 2150, tax: 112300},
+    {min: 2150, max: 2160, tax: 113550}, {min: 2160, max: 2170, tax: 114800}, {min: 2170, max: 2180, tax: 116050},
+    {min: 2180, max: 2190, tax: 117300}, {min: 2190, max: 2200, tax: 118550}, {min: 2200, max: 2210, tax: 119800},
+    {min: 2210, max: 2220, tax: 121050}, {min: 2220, max: 2230, tax: 122300}, {min: 2230, max: 2240, tax: 123550},
+    {min: 2240, max: 2250, tax: 124800}, {min: 2250, max: 2260, tax: 126050}, {min: 2260, max: 2270, tax: 127300},
+    {min: 2270, max: 2280, tax: 128550}, {min: 2280, max: 2290, tax: 129800}, {min: 2290, max: 2300, tax: 131050},
+    {min: 2300, max: 2310, tax: 132300}, {min: 2310, max: 2320, tax: 133550}, {min: 2320, max: 2330, tax: 134800},
+    {min: 2330, max: 2340, tax: 136050}, {min: 2340, max: 2350, tax: 137300}, {min: 2350, max: 2360, tax: 138550},
+    {min: 2360, max: 2370, tax: 139800}, {min: 2370, max: 2380, tax: 141050}, {min: 2380, max: 2390, tax: 142300},
+    {min: 2390, max: 2400, tax: 143550}, {min: 2400, max: 2410, tax: 144800}, {min: 2410, max: 2420, tax: 146050},
+    {min: 2420, max: 2430, tax: 147300}, {min: 2430, max: 2440, tax: 148550}, {min: 2440, max: 2450, tax: 149800},
+    {min: 2450, max: 2460, tax: 151050}, {min: 2460, max: 2470, tax: 152300}, {min: 2470, max: 2480, tax: 153550},
+    {min: 2480, max: 2490, tax: 154800}, {min: 2490, max: 2500, tax: 156050}, {min: 2500, max: 2510, tax: 157300},
+    {min: 2510, max: 2520, tax: 158550}, {min: 2520, max: 2530, tax: 159800}, {min: 2530, max: 2540, tax: 161050},
+    {min: 2540, max: 2550, tax: 162300}, {min: 2550, max: 2560, tax: 163550}, {min: 2560, max: 2570, tax: 164800},
+    {min: 2570, max: 2580, tax: 166050}, {min: 2580, max: 2590, tax: 167300}, {min: 2590, max: 2600, tax: 168550},
+    {min: 2600, max: 2610, tax: 169800}, {min: 2610, max: 2620, tax: 171050}, {min: 2620, max: 2630, tax: 172300},
+    {min: 2630, max: 2640, tax: 173550}, {min: 2640, max: 2650, tax: 174800}, {min: 2650, max: 2660, tax: 176050},
+    {min: 2660, max: 2670, tax: 177300}, {min: 2670, max: 2680, tax: 178550}, {min: 2680, max: 2690, tax: 179800},
+    {min: 2690, max: 2700, tax: 181050}, {min: 2700, max: 2710, tax: 182300}, {min: 2710, max: 2720, tax: 183550},
+    {min: 2720, max: 2730, tax: 184800}, {min: 2730, max: 2740, tax: 186050}, {min: 2740, max: 2750, tax: 187300},
+    {min: 2750, max: 2760, tax: 188550}, {min: 2760, max: 2770, tax: 189800}, {min: 2770, max: 2780, tax: 191050},
+    {min: 2780, max: 2790, tax: 192300}, {min: 2790, max: 2800, tax: 193550}, {min: 2800, max: 2810, tax: 194800},
+    {min: 2810, max: 2820, tax: 196050}, {min: 2820, max: 2830, tax: 197300}, {min: 2830, max: 2840, tax: 198550},
+    {min: 2840, max: 2850, tax: 199800}, {min: 2850, max: 2860, tax: 201050}, {min: 2860, max: 2870, tax: 202300},
+    {min: 2870, max: 2880, tax: 203550}, {min: 2880, max: 2890, tax: 204800}, {min: 2890, max: 2900, tax: 206050},
+    {min: 2900, max: 2910, tax: 207300}, {min: 2910, max: 2920, tax: 208550}, {min: 2920, max: 2930, tax: 209800},
+    {min: 2930, max: 2940, tax: 211050}, {min: 2940, max: 2950, tax: 212300}, {min: 2950, max: 2960, tax: 213550},
+    {min: 2960, max: 2970, tax: 214800}, {min: 2970, max: 2980, tax: 216050}, {min: 2980, max: 2990, tax: 217300},
+    {min: 2990, max: 3000, tax: 218550}, {min: 3000, max: 3020, tax: 219800}, {min: 3020, max: 3040, tax: 222300},
+    {min: 3040, max: 3060, tax: 224800}, {min: 3060, max: 3080, tax: 227300}, {min: 3080, max: 3100, tax: 229800},
+    {min: 3100, max: 3120, tax: 232300}, {min: 3120, max: 3140, tax: 234800}, {min: 3140, max: 3160, tax: 237300},
+    {min: 3160, max: 3180, tax: 239800}, {min: 3180, max: 3200, tax: 242300}, {min: 3200, max: 3220, tax: 244800},
+    {min: 3220, max: 3240, tax: 247300}, {min: 3240, max: 3260, tax: 249800}, {min: 3260, max: 3280, tax: 252300},
+    {min: 3280, max: 3300, tax: 254800}, {min: 3300, max: 3320, tax: 257300}, {min: 3320, max: 3340, tax: 259800},
+    {min: 3340, max: 3360, tax: 262300}, {min: 3360, max: 3380, tax: 264800}, {min: 3380, max: 3400, tax: 267300},
+    {min: 3400, max: 3420, tax: 269800}, {min: 3420, max: 3440, tax: 272300}, {min: 3440, max: 3460, tax: 274800},
+    {min: 3460, max: 3480, tax: 277300}, {min: 3480, max: 3500, tax: 279800}, {min: 3500, max: 3520, tax: 282300},
+    {min: 3520, max: 3540, tax: 284800}, {min: 3540, max: 3560, tax: 287300}, {min: 3560, max: 3580, tax: 289800},
+    {min: 3580, max: 3600, tax: 292300}, {min: 3600, max: 3620, tax: 294800}, {min: 3620, max: 3640, tax: 297300},
+    {min: 3640, max: 3660, tax: 299800}, {min: 3660, max: 3680, tax: 302300}, {min: 3680, max: 3700, tax: 304800},
+    {min: 3700, max: 3720, tax: 307300}, {min: 3720, max: 3740, tax: 309800}, {min: 3740, max: 3760, tax: 312300},
+    {min: 3760, max: 3780, tax: 314800}, {min: 3780, max: 3800, tax: 317300}, {min: 3800, max: 3820, tax: 319800},
+    {min: 3820, max: 3840, tax: 322300}, {min: 3840, max: 3860, tax: 324800}, {min: 3860, max: 3880, tax: 327300},
+    {min: 3880, max: 3900, tax: 329800}, {min: 3900, max: 3920, tax: 332300}, {min: 3920, max: 3940, tax: 334800},
+    {min: 3940, max: 3960, tax: 337300}, {min: 3960, max: 3980, tax: 339800}, {min: 3980, max: 4000, tax: 342300},
+    {min: 4000, max: 4020, tax: 344800}, {min: 4020, max: 4040, tax: 347300}, {min: 4040, max: 4060, tax: 349800},
+    {min: 4060, max: 4080, tax: 352300}, {min: 4080, max: 4100, tax: 354800}, {min: 4100, max: 4120, tax: 357300},
+    {min: 4120, max: 4140, tax: 359800}, {min: 4140, max: 4160, tax: 362300}, {min: 4160, max: 4180, tax: 364800},
+    {min: 4180, max: 4200, tax: 367300}, {min: 4200, max: 4220, tax: 369800}, {min: 4220, max: 4240, tax: 372300},
+    {min: 4240, max: 4260, tax: 374800}, {min: 4260, max: 4280, tax: 377300}, {min: 4280, max: 4300, tax: 379800},
+    {min: 4300, max: 4320, tax: 382300}, {min: 4320, max: 4340, tax: 384800}, {min: 4340, max: 4360, tax: 387300},
+    {min: 4360, max: 4380, tax: 389800}, {min: 4380, max: 4400, tax: 392300}, {min: 4400, max: 4420, tax: 394800},
+    {min: 4420, max: 4440, tax: 397300}, {min: 4440, max: 4460, tax: 399800}, {min: 4460, max: 4480, tax: 402300},
+    {min: 4480, max: 4500, tax: 404800}, {min: 4500, max: 4520, tax: 407300}, {min: 4520, max: 4540, tax: 409800},
+    {min: 4540, max: 4560, tax: 412300}, {min: 4560, max: 4580, tax: 414800}, {min: 4580, max: 4600, tax: 417300},
+    {min: 4600, max: 4620, tax: 419800}, {min: 4620, max: 4640, tax: 422300}, {min: 4640, max: 4660, tax: 424800},
+    {min: 4660, max: 4680, tax: 427300}, {min: 4680, max: 4700, tax: 429800}, {min: 4700, max: 4720, tax: 432300},
+    {min: 4720, max: 4740, tax: 434800}, {min: 4740, max: 4760, tax: 437300}, {min: 4760, max: 4780, tax: 439800},
+    {min: 4780, max: 4800, tax: 442300}, {min: 4800, max: 4820, tax: 444800}, {min: 4820, max: 4840, tax: 447300},
+    {min: 4840, max: 4860, tax: 449800}, {min: 4860, max: 4880, tax: 452300}, {min: 4880, max: 4900, tax: 454800},
+    {min: 4900, max: 4920, tax: 457300}, {min: 4920, max: 4940, tax: 459800}, {min: 4940, max: 4960, tax: 462300},
+    {min: 4960, max: 4980, tax: 464800}, {min: 4980, max: 5000, tax: 467300}, {min: 5000, max: 5050, tax: 469800},
+    {min: 5050, max: 5100, tax: 475925}, {min: 5100, max: 5150, tax: 482050}, {min: 5150, max: 5200, tax: 488175},
+    {min: 5200, max: 5250, tax: 494300}, {min: 5250, max: 5300, tax: 500425}, {min: 5300, max: 5350, tax: 506550},
+    {min: 5350, max: 5400, tax: 512675}, {min: 5400, max: 5450, tax: 518800}, {min: 5450, max: 5500, tax: 524925},
+    {min: 5500, max: 5550, tax: 531050}, {min: 5550, max: 5600, tax: 537175}, {min: 5600, max: 5650, tax: 543300},
+    {min: 5650, max: 5700, tax: 549425}, {min: 5700, max: 5750, tax: 555550}, {min: 5750, max: 5800, tax: 561675},
+    {min: 5800, max: 5850, tax: 567800}, {min: 5850, max: 5900, tax: 573925}, {min: 5900, max: 5950, tax: 580050},
+    {min: 5950, max: 6000, tax: 586175}, {min: 6000, max: 6500, tax: 600000}, {min: 6500, max: 7000, tax: 660000},
+    {min: 7000, max: 7500, tax: 720000}, {min: 7500, max: 8000, tax: 780000}, {min: 8000, max: 8500, tax: 840000},
+    {min: 8500, max: 9000, tax: 900000}, {min: 9000, max: 9500, tax: 960000}, {min: 9500, max: 10000, tax: 1020000}
+  ];
+  
+  return {1: table1};
+}
