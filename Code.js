@@ -102,8 +102,13 @@ function getUserSettings() {
 function 메인_01_오늘잔업비계산() {
   var settings = getUserSettings();
   var today = new Date();
-  var startOfPrevDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1, 18, 0, 0); // 전날 오후 6시부터
-  var endOfNextDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 6, 0, 0);
+
+  // 어제 날짜 계산 (오전 6시 트리거 기준, 어제 근무를 계산)
+  var yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+
+  // 어제 하루 범위 + 새벽 퇴근 대비 (어제 0시 ~ 오늘 오전 6시)
+  var startOfDay = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 0, 0, 0);
+  var endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 6, 0, 0);
 
   var calendar = CalendarApp.getCalendarsByName(settings.CALENDAR_NAME)[0];
   if (!calendar) {
@@ -111,15 +116,20 @@ function 메인_01_오늘잔업비계산() {
     return;
   }
 
-  var events = calendar.getEvents(startOfPrevDay, endOfNextDay);
-  
+  var events = calendar.getEvents(startOfDay, endOfDay);
+
+  // 어제 날짜에 이미 계산된 이벤트가 있는지 확인
   for (var i = 0; i < events.length; i++) {
     if (events[i].getTitle() === "💰 오늘 잔업비") {
-      Logger.log("✅ 이미 계산 완료");
-      return;
+      var eventDate = events[i].getStartTime();
+      if (eventDate.getDate() === yesterday.getDate() &&
+          eventDate.getMonth() === yesterday.getMonth()) {
+        Logger.log("✅ 이미 계산 완료");
+        return;
+      }
     }
   }
-  
+
   var startEvent = null;
   var endEvent = null;
 
@@ -132,23 +142,26 @@ function 메인_01_오늘잔업비계산() {
       endEvent = events[i];
     }
   }
-  
+
   if (!startEvent || !endEvent) {
-    Logger.log("⚠️ 출퇴근 기록 없음");
+    Logger.log("⚠️ 출퇴근 기록 없음 (" + formatDate(yesterday) + ")");
     return;
   }
-  
+
+  // 출근 이벤트의 날짜를 기준으로 계산 (workDate)
   var startTime = startEvent.getStartTime();
   var endTime = endEvent.getStartTime();
-  var day = today.getDay();
+  var workDate = new Date(startTime.getFullYear(), startTime.getMonth(), startTime.getDate());
+
+  var day = workDate.getDay();
   var isWeekend = (day === 0 || day === 6);
-  var isHoliday = checkKoreanHoliday(today);
-  
+  var isHoliday = checkKoreanHoliday(workDate);
+
   var pay = 0;
   var overtimeHours = 0;
-  
+
   if (isWeekend || isHoliday) {
-    var overtimeStart = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 8, 0, 0);
+    var overtimeStart = new Date(workDate.getFullYear(), workDate.getMonth(), workDate.getDate(), 8, 0, 0);
     if (endTime > overtimeStart) {
       var compareTime = startTime > overtimeStart ? startTime : overtimeStart;
       var rawMinutes = Math.floor((endTime - compareTime) / 1000 / 60);
@@ -159,55 +172,55 @@ function 메인_01_오늘잔업비계산() {
       pay = overtimeHours * settings.HOURLY_WAGE * settings.OVERTIME_MULTIPLIER;
     }
   } else {
-    var overtimeStart = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 19, 0, 0);
+    var overtimeStart = new Date(workDate.getFullYear(), workDate.getMonth(), workDate.getDate(), 19, 0, 0);
     if (endTime > overtimeStart) {
       var actualMinutes = Math.floor((endTime - overtimeStart) / 1000 / 60);
       overtimeHours = calculateOvertimeHours(actualMinutes);
       pay = overtimeHours * settings.HOURLY_WAGE * settings.OVERTIME_MULTIPLIER;
     }
   }
-  
-  var yesterdayAccumulated = getMonthlyTotal(today);
-  
-  if (pay > 0) saveMonthlyTotal(today, pay, overtimeHours);
-  
-  var accumulated = getMonthlyTotal(today);
-  var monthName = today.getMonth() + 1;
-  
+
+  var yesterdayAccumulated = getMonthlyTotal(workDate);
+
+  if (pay > 0) saveMonthlyTotal(workDate, pay, overtimeHours);
+
+  var accumulated = getMonthlyTotal(workDate);
+  var monthName = workDate.getMonth() + 1;
+
   // 급여 계산
   var monthlyBasePay = settings.BASE_SALARY + settings.FIXED_OVERTIME_ALLOWANCE + settings.PRODUCTION_BONUS;
   var todayTotalEarned = monthlyBasePay + accumulated.totalPay;
-  
+
   var taxableIncome = todayTotalEarned - settings.TOTAL_NON_TAXABLE;
-  
+
   var nationalPension = Math.floor(todayTotalEarned * settings.NATIONAL_PENSION_RATE / 100);
   var healthInsurance = Math.floor(todayTotalEarned * settings.HEALTH_INSURANCE_RATE / 100);
   var longTermCare = Math.floor(healthInsurance * settings.LONG_TERM_CARE_RATE / 100);
   var employmentInsurance = Math.floor(todayTotalEarned * settings.EMPLOYMENT_INSURANCE_RATE / 100);
   var totalInsurance = nationalPension + healthInsurance + longTermCare + employmentInsurance;
-  
+
   var incomeTax = calculateIncomeTax(taxableIncome, settings.DEPENDENTS, settings.TAX_ENABLED);
   var localTax = Math.floor(incomeTax * settings.LOCAL_TAX_RATE / 100);
   var totalTax = incomeTax + localTax;
-  
+
   var totalDeduction = totalInsurance + totalTax;
   var netSalary = todayTotalEarned - totalDeduction;
-  
+
   // 설명 생성
   var workType = isWeekend ? "주말" : (isHoliday ? "공휴일" : "평일");
   var description = "";
-  
+
   description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-  description += "💰 " + today.getFullYear() + "년 " + monthName + "월 " + today.getDate() + "일 오늘까지 급여\n";
+  description += "💰 " + workDate.getFullYear() + "년 " + monthName + "월 " + workDate.getDate() + "일 오늘까지 급여\n";
   description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
   description += "📅 " + workType + " | " + formatTime(startTime) + " - " + formatTime(endTime) + "\n\n";
-  
+
   if (pay > 0) {
     description += "【 오늘 잔업 】\n";
     description += "▪️ 잔업시간: " + overtimeHours + "시간\n";
     description += "▪️ 잔업비: " + formatNumber(Math.floor(pay)) + "원\n\n";
   }
-  
+
   description += "【 지급 내역 】\n";
   description += "▪️ 기본급: " + formatNumber(settings.BASE_SALARY) + "원\n";
   description += "▪️ 고정연장수당: " + formatNumber(settings.FIXED_OVERTIME_ALLOWANCE) + "원\n";
@@ -215,7 +228,7 @@ function 메인_01_오늘잔업비계산() {
   description += "▪️ " + monthName + "월 잔업비 누적: " + formatNumber(Math.floor(accumulated.totalPay)) + "원\n";
   description += "  (총 " + accumulated.totalHours + "시간 / " + accumulated.days + "일)\n\n";
   description += "💰 총 급여: " + formatNumber(Math.floor(todayTotalEarned)) + "원\n\n";
-  
+
   description += "【 공제 내역 】\n";
   description += "▪️ 4대 보험료\n";
   description += "  - 국민연금(" + settings.NATIONAL_PENSION_RATE + "%): " + formatNumber(nationalPension) + "원\n";
@@ -223,14 +236,14 @@ function 메인_01_오늘잔업비계산() {
   description += "  - 장기요양(" + settings.LONG_TERM_CARE_RATE + "%): " + formatNumber(longTermCare) + "원\n";
   description += "  - 고용보험(" + settings.EMPLOYMENT_INSURANCE_RATE + "%): " + formatNumber(employmentInsurance) + "원\n";
   description += "  - 소계: " + formatNumber(totalInsurance) + "원\n\n";
-  
+
   if (settings.TAX_ENABLED) {
     description += "▪️ 세금\n";
     description += "  - 소득세: " + formatNumber(incomeTax) + "원\n";
     description += "  - 지방소득세: " + formatNumber(localTax) + "원\n";
     description += "  - 소계: " + formatNumber(totalTax) + "원\n\n";
   }
-  
+
   description += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
   description += "📊 총 공제액: " + formatNumber(totalDeduction) + "원\n\n";
   description += "💸 오늘까지 실수령액: " + formatNumber(netSalary) + "원 💸\n";
@@ -240,18 +253,18 @@ function 메인_01_오늘잔업비계산() {
   description += "▪️ 오늘 증가: " + formatNumber(Math.floor(pay)) + "원\n";
 
   // 잔업비 지급월 계산 (2개월 후)
-  var paymentDate = new Date(today.getFullYear(), today.getMonth() + 2, 1);
+  var paymentDate = new Date(workDate.getFullYear(), workDate.getMonth() + 2, 1);
   var paymentYear = paymentDate.getFullYear();
   var paymentMonth = paymentDate.getMonth() + 1;
-  var paymentText = paymentYear === today.getFullYear() ? paymentMonth + "월" : paymentYear + "년 " + paymentMonth + "월";
+  var paymentText = paymentYear === workDate.getFullYear() ? paymentMonth + "월" : paymentYear + "년 " + paymentMonth + "월";
   description += "▪️ " + monthName + "월 잔업비는 " + paymentText + "에 지급됩니다.\n";
-  
-  calendar.createEvent("💰 오늘 잔업비", 
-    new Date(today.getFullYear(), today.getMonth(), today.getDate(), 22, 0), 
-    new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 0), 
+
+  calendar.createEvent("💰 오늘 잔업비",
+    new Date(workDate.getFullYear(), workDate.getMonth(), workDate.getDate(), 22, 0),
+    new Date(workDate.getFullYear(), workDate.getMonth(), workDate.getDate(), 23, 0),
     {description: description});
-  
-  Logger.log("✅ 계산 완료");
+
+  Logger.log("✅ " + formatDate(workDate) + " 계산 완료");
 }
 
 // ==========================================
