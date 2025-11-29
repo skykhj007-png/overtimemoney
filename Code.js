@@ -135,10 +135,13 @@ function 메인_01_오늘잔업비계산() {
 
   for (var i = 0; i < events.length; i++) {
     var title = events[i].getTitle();
-    // "출근" 키워드로 출근 인식, "퇴근" 키워드로 퇴근 인식
-    if (title.indexOf("출근") > -1) {
+    var eventTime = events[i].getStartTime();
+
+    // 어제 날짜의 출퇴근만 인식
+    if (title.indexOf("출근") > -1 && eventTime.getDate() === yesterday.getDate() && eventTime.getMonth() === yesterday.getMonth()) {
       startEvent = events[i];
     } else if (title.indexOf("퇴근") > -1) {
+      // 퇴근은 어제 또는 오늘 새벽일 수 있음
       endEvent = events[i];
     }
   }
@@ -148,7 +151,7 @@ function 메인_01_오늘잔업비계산() {
     return;
   }
 
-  // 출근 이벤트의 날짜를 기준으로 계산 (workDate)
+  // 출근 이벤트의 날짜를 기준으로 계산 (workDate = 어제)
   var startTime = startEvent.getStartTime();
   var endTime = endEvent.getStartTime();
   var workDate = new Date(startTime.getFullYear(), startTime.getMonth(), startTime.getDate());
