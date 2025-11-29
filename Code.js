@@ -771,7 +771,9 @@ function createMonthlyPayslipForMonth(year, month) {
     description += "▪️ 누적 금액: " + formatNumber(Math.floor(currentMonthOvertime.totalPay)) + "원\n";
     description += "▪️ 누적 시간: " + currentMonthOvertime.totalHours + "시간\n";
     description += "▪️ 근무 일수: " + currentMonthOvertime.days + "일\n";
-    description += "▪️ 지급 예정: " + (month + 2) + "월 급여\n\n";
+    var payMonthForNote = month + 2;
+    var payMonthNoteText = payMonthForNote > 12 ? (payMonthForNote - 12) + "월 (내년)" : payMonthForNote + "월";
+    description += "▪️ 지급 예정: " + payMonthNoteText + " 급여\n\n";
     description += "* 이번 달 잔업비는 2개월 후 지급됩니다.\n";
   }
   
