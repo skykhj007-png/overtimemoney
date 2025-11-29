@@ -466,7 +466,9 @@ function 메인_02_이번달과거소급() {
     description += "【 참고 】\n";
     description += "▪️ 어제까지 누적: " + formatNumber(Math.floor(yesterdayAccumulated.totalPay)) + "원\n";
     description += "▪️ 오늘 증가: " + formatNumber(Math.floor(pay)) + "원\n";
-    description += "▪️ " + monthName + "월 잔업비는 " + (monthName + 2) + "월에 지급됩니다.\n";
+    var payMonth = monthName + 2;
+    var payMonthText = payMonth > 12 ? (payMonth - 12) + "월 (내년)" : payMonth + "월";
+    description += "▪️ " + monthName + "월 잔업비는 " + payMonthText + "에 지급됩니다.\n";
     
     calendar.createEvent("💰 오늘 잔업비", 
       new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 22, 0), 
@@ -651,7 +653,9 @@ function 메인_03_여러달한번에() {
       description += "【 참고 】\n";
       description += "▪️ 어제까지 누적: " + formatNumber(Math.floor(yesterdayAccumulated.totalPay)) + "원\n";
       description += "▪️ 오늘 증가: " + formatNumber(Math.floor(pay)) + "원\n";
-      description += "▪️ " + monthName + "월 잔업비는 " + (monthName + 2) + "월에 지급됩니다.\n";
+      var payMonth = monthName + 2;
+    var payMonthText = payMonth > 12 ? (payMonth - 12) + "월 (내년)" : payMonth + "월";
+    description += "▪️ " + monthName + "월 잔업비는 " + payMonthText + "에 지급됩니다.\n";
       
       calendar.createEvent("💰 오늘 잔업비", 
         new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 22, 0), 
