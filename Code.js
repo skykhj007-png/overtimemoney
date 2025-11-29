@@ -106,9 +106,10 @@ function 메인_01_오늘잔업비계산() {
   // 어제 날짜 계산 (오전 6시 트리거 기준, 어제 근무를 계산)
   var yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
 
-  // 어제 하루 범위 + 새벽 퇴근 대비 (어제 0시 ~ 오늘 오전 6시)
-  var startOfDay = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 0, 0, 0);
-  var endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 6, 0, 0);
+  Logger.log("=".repeat(50));
+  Logger.log("📅 오늘 날짜: " + formatDate(today));
+  Logger.log("📅 계산 대상 (어제): " + formatDate(yesterday));
+  Logger.log("=".repeat(50));
 
   var calendar = CalendarApp.getCalendarsByName(settings.CALENDAR_NAME)[0];
   if (!calendar) {
@@ -116,45 +117,86 @@ function 메인_01_오늘잔업비계산() {
     return;
   }
 
-  var events = calendar.getEvents(startOfDay, endOfDay);
+  // 어제 하루 전체 검색 (어제 0시 ~ 어제 23:59:59)
+  var startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 0, 0, 0);
+  var endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59);
+
+  // 오늘 새벽 검색 (퇴근이 새벽일 경우 대비: 오늘 0시 ~ 오늘 6시)
+  var startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0);
+  var endOfTodayMorning = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 6, 0, 0);
+
+  Logger.log("🔍 어제 검색 범위: " + startOfYesterday.toLocaleString() + " ~ " + endOfYesterday.toLocaleString());
+  Logger.log("🔍 새벽 검색 범위: " + startOfToday.toLocaleString() + " ~ " + endOfTodayMorning.toLocaleString());
+
+  var eventsYesterday = calendar.getEvents(startOfYesterday, endOfYesterday);
+  var eventsToday = calendar.getEvents(startOfToday, endOfTodayMorning);
+
+  Logger.log("📋 어제 이벤트 수: " + eventsYesterday.length);
+  Logger.log("📋 새벽 이벤트 수: " + eventsToday.length);
+
+  // 어제 이벤트 목록 출력
+  Logger.log("");
+  Logger.log("【 어제 이벤트 목록 】");
+  for (var i = 0; i < eventsYesterday.length; i++) {
+    var evt = eventsYesterday[i];
+    Logger.log("  - " + evt.getTitle() + " (" + formatTime(evt.getStartTime()) + ")");
+  }
 
   // 어제 날짜에 이미 계산된 이벤트가 있는지 확인
-  for (var i = 0; i < events.length; i++) {
-    if (events[i].getTitle() === "💰 오늘 잔업비") {
-      var eventDate = events[i].getStartTime();
-      if (eventDate.getDate() === yesterday.getDate() &&
-          eventDate.getMonth() === yesterday.getMonth()) {
-        Logger.log("✅ 이미 계산 완료");
-        return;
-      }
+  for (var i = 0; i < eventsYesterday.length; i++) {
+    if (eventsYesterday[i].getTitle() === "💰 오늘 잔업비") {
+      Logger.log("✅ 이미 계산 완료 (" + formatDate(yesterday) + ")");
+      return;
     }
   }
 
   var startEvent = null;
   var endEvent = null;
 
-  for (var i = 0; i < events.length; i++) {
-    var title = events[i].getTitle();
-    var eventTime = events[i].getStartTime();
+  // 어제 이벤트에서 출근/퇴근 찾기
+  for (var i = 0; i < eventsYesterday.length; i++) {
+    var title = eventsYesterday[i].getTitle();
+    var eventDate = eventsYesterday[i].getStartTime();
 
-    // 어제 날짜의 출퇴근만 인식
-    if (title.indexOf("출근") > -1 && eventTime.getDate() === yesterday.getDate() && eventTime.getMonth() === yesterday.getMonth()) {
-      startEvent = events[i];
+    if (title.indexOf("출근") > -1) {
+      startEvent = eventsYesterday[i];
+      Logger.log("✅ 출근 발견: " + formatDate(eventDate) + " " + formatTime(eventDate));
     } else if (title.indexOf("퇴근") > -1) {
-      // 퇴근은 어제 또는 오늘 새벽일 수 있음
-      endEvent = events[i];
+      endEvent = eventsYesterday[i];
+      Logger.log("✅ 퇴근 발견 (어제): " + formatDate(eventDate) + " " + formatTime(eventDate));
+    }
+  }
+
+  // 퇴근을 못 찾았으면 오늘 새벽에서 찾기 (새벽 퇴근)
+  if (!endEvent) {
+    Logger.log("⚠️ 어제 퇴근 없음, 새벽 검색 중...");
+    for (var i = 0; i < eventsToday.length; i++) {
+      var title = eventsToday[i].getTitle();
+      if (title.indexOf("퇴근") > -1) {
+        endEvent = eventsToday[i];
+        Logger.log("✅ 퇴근 발견 (새벽): " + formatTime(eventsToday[i].getStartTime()));
+        break;
+      }
     }
   }
 
   if (!startEvent || !endEvent) {
     Logger.log("⚠️ 출퇴근 기록 없음 (" + formatDate(yesterday) + ")");
+    Logger.log("  - 출근: " + (startEvent ? "있음" : "없음"));
+    Logger.log("  - 퇴근: " + (endEvent ? "있음" : "없음"));
     return;
   }
 
-  // 출근 이벤트의 날짜를 기준으로 계산 (workDate = 어제)
+  // 어제 날짜를 workDate로 사용 (출근 이벤트 날짜가 아니라 무조건 어제!)
   var startTime = startEvent.getStartTime();
   var endTime = endEvent.getStartTime();
-  var workDate = new Date(startTime.getFullYear(), startTime.getMonth(), startTime.getDate());
+  var workDate = yesterday;
+
+  Logger.log("");
+  Logger.log("📊 계산 정보:");
+  Logger.log("  - 근무일: " + formatDate(workDate));
+  Logger.log("  - 출근: " + formatTime(startTime));
+  Logger.log("  - 퇴근: " + formatTime(endTime));
 
   var day = workDate.getDay();
   var isWeekend = (day === 0 || day === 6);
