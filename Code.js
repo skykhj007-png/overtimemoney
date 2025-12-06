@@ -1197,6 +1197,92 @@ function 임시_10월명세서재생성() {
 }
 
 // ==========================================
+// 🔧 임시_11월명세서재생성 (캘린더 이벤트 기반)
+// ==========================================
+
+function 임시_11월명세서재생성() {
+  var settings = getUserSettings();
+  var calendar = CalendarApp.getCalendarsByName(settings.CALENDAR_NAME)[0];
+
+  if (!calendar) {
+    Logger.log("❌ 캘린더 없음");
+    return;
+  }
+
+  Logger.log("=".repeat(70));
+  Logger.log("📄 11월 급여명세서 재생성 (캘린더 이벤트 기반)");
+  Logger.log("=".repeat(70));
+  Logger.log("");
+
+  // 1. 11월 모든 💰 오늘 잔업비 이벤트에서 실제 잔업 시간 계산
+  var startDate = new Date(2025, 10, 1, 0, 0, 0);
+  var endDate = new Date(2025, 10, 30, 23, 59, 59);
+  var events = calendar.getEvents(startDate, endDate);
+
+  var totalHours = 0;
+  var totalPay = 0;
+  var count = 0;
+
+  Logger.log("【 11월 잔업 이벤트 스캔 】");
+  for (var i = 0; i < events.length; i++) {
+    var title = events[i].getTitle();
+    if (title === "💰 오늘 잔업비") {
+      var desc = events[i].getDescription();
+      var eventDate = events[i].getStartTime();
+
+      // 이벤트 설명에서 잔업시간 추출
+      var hoursMatch = desc.match(/잔업시간: (\d+)시간/);
+      var payMatch = desc.match(/잔업비: ([\d,]+)원/);
+
+      if (hoursMatch && payMatch) {
+        var hours = parseInt(hoursMatch[1]);
+        var pay = parseInt(payMatch[1].replace(/,/g, ''));
+        totalHours += hours;
+        totalPay += pay;
+        count++;
+        Logger.log("  " + (eventDate.getMonth() + 1) + "/" + eventDate.getDate() + " - " + hours + "시간 / " + formatNumber(pay) + "원");
+      }
+    }
+  }
+
+  Logger.log("");
+  Logger.log("📊 11월 총계:");
+  Logger.log("  - 총 잔업시간: " + totalHours + "시간");
+  Logger.log("  - 총 잔업비: " + formatNumber(Math.floor(totalPay)) + "원");
+  Logger.log("  - 근무일수: " + count + "일");
+  Logger.log("");
+
+  // 2. 저장된 누적 데이터 업데이트
+  var scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.setProperty("2025-11-total-hours", totalHours.toString());
+  scriptProperties.setProperty("2025-11-total-pay", totalPay.toString());
+  scriptProperties.setProperty("2025-11-total-days", count.toString());
+  Logger.log("✅ 11월 누적 데이터 업데이트 완료");
+  Logger.log("");
+
+  // 3. 기존 11월 명세서 찾아서 삭제
+  var deleted = false;
+  for (var i = 0; i < events.length; i++) {
+    if (events[i].getTitle().indexOf("💵") > -1 && events[i].getTitle().indexOf("11월") > -1) {
+      events[i].deleteEvent();
+      Logger.log("🗑️ 기존 명세서 삭제: " + events[i].getTitle());
+      deleted = true;
+    }
+  }
+
+  if (!deleted) {
+    Logger.log("ℹ️  기존 11월 명세서 없음");
+  }
+  Logger.log("");
+
+  // 4. 새로 생성
+  createMonthlyPayslipForMonth(2025, 11);
+  Logger.log("✅ 새 11월 명세서 생성 완료");
+  Logger.log("");
+  Logger.log("=".repeat(70));
+}
+
+// ==========================================
 // 🔍 임시_8월상세확인
 // ==========================================
 
